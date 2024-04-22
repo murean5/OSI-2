@@ -1,9 +1,11 @@
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/sem.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
-#include <sys/sem.h>
 #include <signal.h>
 #include <time.h>
 
@@ -17,58 +19,48 @@ typedef struct {
     int queue_size; // Размер очереди
 } Hotel;
 
+int sem_id; // ID семафора
+int shm_id; // ID разделяемой памяти
 Hotel *hotel; // Указатель на структуру гостиницы
-int semid; // ID семафора
-int shmid; // ID разделяемой памяти
 
 // Функция для очистки ресурсов
 void cleanup() {
     printf("Очистка...\n");
-    semctl(semid, 0, IPC_RMID); // Удаление семафора
+    semctl(sem_id, 0, IPC_RMID); // Уничтожение семафора
     shmdt(hotel); // Отсоединение разделяемой памяти
-    shmctl(shmid, IPC_RMID, NULL); // Удаление разделяемой памяти
+    shmctl(shm_id, IPC_RMID, NULL); // Удаление разделяемой памяти
 }
 
 // Обработчик сигнала прерывания
 void handle_sigint(int sig) {
-    printf("Получен сигнал прерывания. Выход...\n");
     cleanup(); // Очистка ресурсов
     exit(0); // Завершение программы
+}
+
+// Функция для управления семафором
+void sem_op(int op) {
+    struct sembuf sops = {0, op, 0};
+    semop(sem_id, &sops, 1);
 }
 
 // Функция, моделирующая работу администратора гостиницы
 void admin() {
     while (1) {
-        printf("Администратор проверяет номера...\n");
+        sem_op(-1); // Ожидание семафора
         // Проверка номеров и назначение ожидающим клиентам
-        int occupied_rooms = 0;
         for (int i = 0; i < HOTEL_SIZE; i++) {
             if (hotel->rooms[i] == 0 && hotel->queue_size > 0) {
-                struct sembuf sb = {0, -1, 0}; // Операция ожидания семафора
-                semop(semid, &sb, 1);
                 // Назначение номера первому клиенту в очереди
                 hotel->rooms[i] = hotel->queue[0];
-                printf("Клиент %d заселился в номер %d.\n", hotel->queue[0], i);
                 // Удаление первого клиента из очереди
                 for (int j = 0; j < hotel->queue_size - 1; j++) {
                     hotel->queue[j] = hotel->queue[j + 1];
                 }
                 hotel->queue_size--;
-                occupied_rooms++;
-                sb.sem_op = 1; // Операция освобождения семафора
-                semop(semid, &sb, 1);
-            } else if (hotel->rooms[i] != 0) {
-                printf("Номер %d занят клиентом %d.\n", i, hotel->rooms[i]);
-                occupied_rooms++;
-            } else {
-                printf("Номер %d свободен.\n", i);
             }
         }
-        printf("Занято %d из %d номеров.\n", occupied_rooms, HOTEL_SIZE);
-        if (occupied_rooms == HOTEL_SIZE && hotel->queue_size == 0) {
-            printf("Все номера заняты и нет клиентов в очереди. Администратор ждет...\n");
-            sleep(2); // Задержка
-        }
+        sem_op(1); // Освобождение семафора
+        sleep(2); // Задержка
     }
 }
 
@@ -76,28 +68,19 @@ int main() {
     signal(SIGINT, handle_sigint); // Установка обработчика сигнала прерывания
     atexit(cleanup); // Установка функции для очистки ресурсов при завершении программы
 
-    // Получение доступа к разделяемой памяти для структуры гостиницы
-    key_t key = ftok("HOTEL", 'H');
-    shmid = shmget(key, sizeof(Hotel), IPC_CREAT | 0666);
-    hotel = shmat(shmid, NULL, 0);
+    // Создание разделяемой памяти для структуры гостиницы
+    shm_id = shmget(IPC_PRIVATE, sizeof(Hotel), IPC_CREAT | 0666);
+    hotel = (Hotel *)shmat(shm_id, NULL, 0);
 
-    // Получение доступа к семафору
-    semid = semget(key, 1, IPC_CREAT | 0666);
+    printf("shm_id: %d\n", shm_id); // Вывод shm_id
 
-    // Check if the shared memory and semaphore are correctly initialized and attached
-    if (shmid == -1 || semid == -1) {
-        perror("Failed to get shared memory or semaphore");
-        exit(1);
-    }
+    // Создание и инициализация семафора
+    sem_id = semget(IPC_PRIVATE, 1, IPC_CREAT | 0666);
+    semctl(sem_id, 0, SETVAL, 1);
 
-    // Check if the shared memory is correctly attached
-    if (hotel == (void *) -1) {
-        perror("Failed to attach shared memory");
-        exit(1);
-    }
+    admin(); // Запуск функции администратора
 
-    printf("Запуск процесса администратора...\n");
-    admin();
+    while (1) pause(); // Ожидание сигналов
 
     return 0;
 }
