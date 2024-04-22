@@ -29,6 +29,20 @@ void sem_op(int op) {
     semop(sem_id, &sops, 1);
 }
 
+// Функция для очистки ресурсов
+void cleanup() {
+    printf("Очистка...\n");
+    semctl(sem_id, 0, IPC_RMID); // Уничтожение семафора
+    shmdt(hotel); // Отсоединение разделяемой памяти
+    shmctl(shm_id, IPC_RMID, NULL); // Удаление разделяемой памяти
+}
+
+// Обработчик сигнала прерывания
+void handle_sigint(int sig) {
+    cleanup(); // Очистка ресурсов
+    exit(0); // Завершение программы
+}
+
 // Функция, моделирующая поведение клиента
 void customer(int id) {
     srand(time(NULL) + id); // Инициализация генератора случайных чисел
@@ -101,6 +115,9 @@ int main(int argc, char *argv[]) {
         printf("Использование: client <shm_id>\n");
         return 1;
     }
+
+    signal(SIGINT, handle_sigint); // Установка обработчика сигнала прерывания
+    atexit(cleanup); // Установка функции для очистки ресурсов при завершении программы
 
     shm_id = atoi(argv[1]); // Получение ID разделяемой памяти из аргументов командной строки
 
